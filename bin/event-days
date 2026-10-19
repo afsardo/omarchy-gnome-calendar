@@ -1,0 +1,130 @@
+#!/usr/bin/env -S python3 -I
+# Usage: event-days <YYYY-MM-DD start> <YYYY-MM-DD end, exclusive>
+#
+# Prints {"days": {"YYYY-MM-DD": ["#rrggbb", ...]}, "events": {"YYYY-MM-DD":
+# [{"title", "when", "color"}, ...]}}: one dot color per calendar with an
+# event that day, plus that day's agenda. Read from Evolution Data Server
+# (the same data GNOME Calendar and the reminder service use). Only calendars
+# ticked in Evolution/GNOME Calendar count; cancelled and declined events
+# are skipped.
+
+import json
+import sys
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime, timedelta
+
+import gi
+
+gi.require_version("ECal", "2.0")
+gi.require_version("EDataServer", "1.2")
+gi.require_version("ICalGLib", "4.0")
+from gi.repository import ECal, EDataServer, ICalGLib  # noqa: E402
+
+MAX_DOTS = 3
+
+
+def normalize(email):
+    """Gmail ignores dots in the local part, so first.last@ and firstlast@ match."""
+    email = email.lower().removeprefix("mailto:")
+    user, _, domain = email.partition("@")
+    return f"{user.replace('.', '')}@{domain}" if domain == "gmail.com" else email
+
+
+def declined(comp, emails):
+    prop = comp.get_first_property(ICalGLib.PropertyKind.ATTENDEE_PROPERTY)
+    while prop:
+        if normalize(prop.get_attendee() or "") in emails:
+            param = prop.get_first_parameter(ICalGLib.ParameterKind.PARTSTAT_PARAMETER)
+            if param and param.get_partstat() == ICalGLib.ParameterPartstat.DECLINED:
+                return True
+        prop = comp.get_next_property(ICalGLib.PropertyKind.ATTENDEE_PROPERTY)
+    return False
+
+
+def to_local(t):
+    if t.is_date():
+        return datetime(t.get_year(), t.get_month(), t.get_day())
+    return datetime.fromtimestamp(t.as_timet_with_zone(t.get_timezone()))
+
+
+def hex_color(value):
+    """Evolution stores colors as #rrggbb or rgb(r,g,b)."""
+    value = (value or "").strip()
+    if value.startswith("rgb(") and value.endswith(")"):
+        r, g, b = (int(float(x)) for x in value[4:-1].split(","))
+        return f"#{r:02x}{g:02x}{b:02x}"
+    return value[:7] if value.startswith("#") else "#888888"
+
+
+def connect(source):
+    # Remote backends never report "connected" quickly, so wait at most a
+    # second; events are served from the local cache either way.
+    try:
+        return source, ECal.Client.connect_sync(source, ECal.ClientSourceType.EVENTS, 1, None)
+    except Exception:
+        return source, None
+
+
+def main():
+    start = datetime.fromisoformat(sys.argv[1])
+    end = datetime.fromisoformat(sys.argv[2])
+
+    registry = EDataServer.SourceRegistry.new_sync(None)
+    sources = [
+        source
+        for source in registry.list_enabled(EDataServer.SOURCE_EXTENSION_CALENDAR)
+        if source.get_extension(EDataServer.SOURCE_EXTENSION_CALENDAR).get_selected()
+    ]
+    with ThreadPoolExecutor(max_workers=max(1, len(sources))) as pool:
+        clients = list(pool.map(connect, sources))
+
+    days, agenda = {}, {}
+    for source, client in clients:
+        if client is None:
+            continue
+        color = hex_color(source.get_extension(EDataServer.SOURCE_EXTENSION_CALENDAR).get_color())
+        emails = {normalize(source.get_display_name())}
+        auth = source.get_extension(EDataServer.SOURCE_EXTENSION_AUTHENTICATION)
+        if auth.get_user():
+            emails.add(normalize(auth.get_user()))
+
+        def on_instance(icomp, istart, iend, *_):
+            if icomp.get_status() == ICalGLib.PropertyStatus.CANCELLED or declined(icomp, emails):
+                return True
+            first, last = to_local(istart), to_local(iend)
+            # Ends are exclusive: an event ending at midnight (or an all-day
+            # event ending the next day) does not mark that next day.
+            last_day = (last - timedelta(seconds=1)).date() if last > first else first.date()
+            all_day = istart.is_date()
+            title = (icomp.get_summary() or "(no title)").strip()
+            day = max(first.date(), start.date())
+            while day <= last_day and day < end.date():
+                key = day.isoformat()
+                colors = days.setdefault(key, [])
+                if color not in colors and len(colors) < MAX_DOTS:
+                    colors.append(color)
+                starts_today, ends_today = day == first.date(), day == last_day
+                if all_day or not (starts_today or ends_today):
+                    when, order = "All day", ""
+                elif starts_today and ends_today:
+                    when, order = f"{first:%H:%M}–{last:%H:%M}", f"{first:%H:%M}"
+                elif starts_today:
+                    when, order = f"{first:%H:%M}–…", f"{first:%H:%M}"
+                else:
+                    when, order = f"until {last:%H:%M}", "00:00"
+                events = agenda.setdefault(key, [])
+                # The same meeting on two calendars is listed once.
+                if not any(ev["title"] == title and ev["when"] == when for ev in events):
+                    events.append({"title": title, "when": when, "color": color, "order": order})
+                day += timedelta(days=1)
+            return True
+
+        client.generate_instances_sync(int(start.timestamp()), int(end.timestamp()), None, on_instance)
+
+    for events in agenda.values():
+        events.sort(key=lambda ev: ev.pop("order"))
+    print(json.dumps({"days": days, "events": agenda}))
+
+
+if __name__ == "__main__":
+    sys.exit(main())

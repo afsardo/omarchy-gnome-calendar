@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "afsardo.gnome-calendar",
+  "name": "GNOME Calendar Clock",
+  "version": "1.0.0",
+  "author": "afsardo",
+  "description": "Omarchy's clock with your GNOME Calendar / Evolution events in the popup",
+  "homepage": "https://github.com/afsardo/omarchy-gnome-calendar",
+  "license": "MIT",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "GNOME Calendar Clock",
+    "description": "Date/time label with a calendar popup showing your events",
+    "category": "Time",
+    "allowMultiple": false
+  }
+}
