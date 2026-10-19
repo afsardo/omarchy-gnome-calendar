@@ -37,6 +37,14 @@ Then replace the stock clock in your bar: in `~/.config/omarchy/shell.json`, cha
 
 After editing the plugin's files, run `omarchy restart shell`. The automatic plugin reload does not pick up changes to the popup.
 
+## Remove
+
+Put the stock clock back first: in `~/.config/omarchy/shell.json`, change `"id": "afsardo.gnome-calendar"` back to `"id": "omarchy.clock"`. Then remove the plugin:
+
+```sh
+omarchy plugin remove afsardo.gnome-calendar
+```
+
 ## Tips
 
 **Google calendars show a 405 error in Evolution.** If Evolution saved a Google calendar without its calendar ID, the error mentions `https://apidata.googleusercontent.com/caldav/v2/`. Close Evolution, then in that calendar's file under `~/.config/evolution/sources/`, set:
